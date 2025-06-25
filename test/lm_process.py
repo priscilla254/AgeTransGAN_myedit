@@ -13,7 +13,7 @@ import util
 
 class LandmarkProcessing():
     def __init__(self):
-        self.fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D, flip_input=False)
+        self.fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, flip_input=False)
 
     def detector(self, img):
 
