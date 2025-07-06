@@ -1,48 +1,30 @@
 import os
 import argparse
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import lm_process
 import img_process
 import age_transfer
-from torch.autograd import Variable
 import torch
 from torchvision import transforms
 import numpy as np
 import cv2
-from datetime import datetime
-from make_video import make_video, play_video
-import torchvision.utils as vutils
+import csv
 import time
+import pandas as pd
 
 print("🔧 Importing necessary libraries...")
 
-def annotate_image(img, label, font_size=24):
-    draw = ImageDraw.Draw(img)
-
-    try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
-    except IOError:
-        font = ImageFont.load_default()
-
-    bbox = draw.textbbox((0, 0), label, font=font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
-
-    padding = 5
-    x, y = padding, padding
-
-    draw.rectangle(
-        [x - padding, y - padding, x + text_width + padding, y + text_height + padding],
-        fill="black"
-    )
-    draw.text((x, y), label, font=font, fill="white")
-
-    return img
-
 def main(args):
     print("🔧 Inside main()")
-    
-    os.makedirs("annotated_results", exist_ok=True)
+
+    # === Load seed image metadata ===
+    seed_metadata_path = os.path.join(args.dir, "metadata.csv")
+    if not os.path.isfile(seed_metadata_path):
+        print(f"❌ Could not find metadata.csv in {args.dir}")
+        return
+
+    seed_metadata = pd.read_csv(seed_metadata_path)
+    metadata_map = dict(zip(seed_metadata["filename"], seed_metadata["ethnicity"]))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🧠 Using device: {device}")
@@ -60,7 +42,6 @@ def main(args):
         print(f"📥 Loading model checkpoint from {args.snapshot}")
         checkpoint = torch.load(args.snapshot, map_location=device)
         model.G_model.load_state_dict(checkpoint['g_ema'])
-
         print("✅ Model checkpoint loaded")
     else:
         print(f"⚠️ No valid checkpoint found at {args.snapshot}, using uninitialized model")
@@ -70,19 +51,16 @@ def main(args):
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
 
-    image_extensions = ['.jpg', '.jpeg', '.png']
+    # Collect input images
     image_files = []
-    if args.dir is not None:
-        if os.path.isdir(args.dir):
-            image_files = [os.path.join(args.dir, f) for f in os.listdir(args.dir)
-                           if os.path.splitext(f)[1].lower() in image_extensions]
-        elif os.path.isfile(args.dir) and os.path.splitext(args.dir)[1].lower() in image_extensions:
-            image_files = [args.dir]
-        else:
-            print(f"❌ Provided path is not a valid image file or directory: {args.dir}")
-            return
+    image_extensions = ['.jpg', '.jpeg', '.png']
+    if os.path.isdir(args.dir):
+        image_files = [os.path.join(args.dir, f) for f in os.listdir(args.dir)
+                       if os.path.splitext(f)[1].lower() in image_extensions]
+    elif os.path.isfile(args.dir) and os.path.splitext(args.dir)[1].lower() in image_extensions:
+        image_files = [args.dir]
     else:
-        print("❌ Please provide a directory or image file with --dir")
+        print(f"❌ Provided path is not a valid image file or directory: {args.dir}")
         return
 
     print(f"📂 Found {len(image_files)} images")
@@ -101,12 +79,9 @@ def main(args):
             print(f"⚠️ Landmark detection failed: {image_path}")
             continue
 
-        print("✂️ Cropping image around landmarks")
         cropped = IMP.crop(img, lm)
         filename_base = os.path.splitext(os.path.basename(image_path))[0]
         cropped = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
-
-        print("📦 Converting to tensor")
         cropped_tensor = transform(cropped).unsqueeze(0).to(device)
 
         print("🎨 Generating age-transformed images...")
@@ -124,14 +99,38 @@ def main(args):
             print("❌ Model returned no images. Skipping.")
             continue
 
+        # Get ethnicity from metadata
+        original_filename = os.path.basename(image_path)
+        ethnicity = metadata_map.get(original_filename, "Unknown")
+        ethnicity_dir = os.path.join("step2_seed_images", ethnicity)
+        os.makedirs(ethnicity_dir, exist_ok=True)
+        metadata_path = os.path.join(ethnicity_dir, "metadata.csv")
+        metadata_rows = []
+
         for age_idx, img_tensor in enumerate(clean_images):
             img = transforms.ToPILImage()((img_tensor.cpu().clamp(-1, 1) + 1) / 2)
-            age_label = f"Age group {age_idx + 1}"
-            annotated_img = annotate_image(img, age_label)
-
-            save_path = f"annotated_results/{filename_base}_age{age_idx + 1}.png"
-            annotated_img.save(save_path)
+            filename = f"{filename_base}_age{age_idx + 1}.png"
+            save_path = os.path.join(ethnicity_dir, filename)
+            img.save(save_path)
             print(f"💾 Saved: {save_path}")
+
+            metadata_rows.append({
+                "filename": filename,
+                "original_image": original_filename,
+                "ethnicity": ethnicity,
+                "age_group": f"age{age_idx + 1}"
+            })
+
+        # Append to or create metadata.csv
+        if os.path.exists(metadata_path):
+            with open(metadata_path, "a", newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=["filename", "original_image", "ethnicity", "age_group"])
+                writer.writerows(metadata_rows)
+        else:
+            with open(metadata_path, "w", newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=["filename", "original_image", "ethnicity", "age_group"])
+                writer.writeheader()
+                writer.writerows(metadata_rows)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -140,6 +139,5 @@ if __name__ == '__main__':
     parser.add_argument('--group', type=int, default=10, help='Number of age groups (e.g., 4 or 10)')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--snapshot', type=str, default='./snapshot/140000.pt', help='Path to model checkpoint')
-
     args = parser.parse_args()
     main(args)
