@@ -1,1 +1,2 @@
-test/snapshot/ffhq_4group_750k.pt
+test/snapshot/*.pt
+
