@@ -24,7 +24,8 @@ def main(args):
         return
 
     seed_metadata = pd.read_csv(seed_metadata_path)
-    metadata_map = dict(zip(seed_metadata["filename"], seed_metadata["ethnicity"]))
+    metadata_map = seed_metadata.set_index("filename").to_dict("index")
+
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🧠 Using device: {device}")
@@ -101,7 +102,9 @@ def main(args):
 
         # Get ethnicity from metadata
         original_filename = os.path.basename(image_path)
-        ethnicity = metadata_map.get(original_filename, "Unknown")
+        entry = metadata_map.get(original_filename, {})
+        ethnicity = entry.get("ethnicity", "Unknown")
+        gender = entry.get("gender", "Unknown")
         ethnicity_dir = os.path.join("step2_seed_images", ethnicity)
         os.makedirs(ethnicity_dir, exist_ok=True)
         metadata_path = os.path.join(ethnicity_dir, "metadata.csv")
@@ -118,19 +121,23 @@ def main(args):
                 "filename": filename,
                 "original_image": original_filename,
                 "ethnicity": ethnicity,
+                "gender": gender,
                 "age_group": f"age{age_idx + 1}"
             })
 
         # Append to or create metadata.csv
+        fieldnames = ["filename", "original_image", "ethnicity", "gender", "age_group"]
+
         if os.path.exists(metadata_path):
             with open(metadata_path, "a", newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=["filename", "original_image", "ethnicity", "age_group"])
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writerows(metadata_rows)
         else:
             with open(metadata_path, "w", newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=["filename", "original_image", "ethnicity", "age_group"])
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(metadata_rows)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
